@@ -1,0 +1,174 @@
+# Copyright (c) Recommenders contributors.
+# Licensed under the MIT License.
+
+
+import os
+import pytest
+
+from recommenders.datasets import movielens
+from recommenders.datasets.amazon_reviews import (
+    download_and_extract,
+    data_preprocessing,
+)
+from recommenders.datasets.python_splitters import python_stratified_split
+
+try:
+    from recommenders.models.deeprec.DataModel.ImplicitCF import ImplicitCF
+    from recommenders.models.deeprec.deeprec_utils import prepare_hparams
+    from recommenders.models.deeprec.io.nextitnet_iterator import NextItNetIterator
+    from recommenders.models.deeprec.io.sequential_iterator import SequentialIterator
+    from recommenders.models.deeprec.models.graphrec.lightgcn import LightGCN
+    from recommenders.models.deeprec.models.sequential.nextitnet import (
+        NextItNetModel,
+    )
+    from recommenders.models.deeprec.models.sequential.sum import SUMModel
+except ImportError:
+    pass  # skip this import if we are in cpu environment
+
+
+@pytest.fixture(scope="module")
+def sequential_files(deeprec_resource_path):
+    data_path = os.path.join(deeprec_resource_path, "slirec")
+    train_file = os.path.join(data_path, "train_data")
+    valid_file = os.path.join(data_path, "valid_data")
+    test_file = os.path.join(data_path, "test_data")
+    user_vocab = os.path.join(data_path, "user_vocab.pkl")
+    item_vocab = os.path.join(data_path, "item_vocab.pkl")
+    cate_vocab = os.path.join(data_path, "category_vocab.pkl")
+
+    reviews_name = "reviews_Movies_and_TV_5.json"
+    meta_name = "meta_Movies_and_TV.json"
+    reviews_file = os.path.join(data_path, reviews_name)
+    meta_file = os.path.join(data_path, meta_name)
+
+    # number of negative instances with a positive instance for validation
+    valid_num_ngs = 4
+    # number of negative instances with a positive instance for testing
+    test_num_ngs = 9
+    # sample a small item set for training and testing here for example
+    sample_rate = 0.01
+
+    input_files = [
+        reviews_file,
+        meta_file,
+        train_file,
+        valid_file,
+        test_file,
+        user_vocab,
+        item_vocab,
+        cate_vocab,
+    ]
+    download_and_extract(reviews_name, reviews_file)
+    download_and_extract(meta_name, meta_file)
+    data_preprocessing(
+        *input_files,
+        sample_rate=sample_rate,
+        valid_num_ngs=valid_num_ngs,
+        test_num_ngs=test_num_ngs
+    )
+
+    return (
+        data_path,
+        user_vocab,
+        item_vocab,
+        cate_vocab,
+    )
+
+
+@pytest.mark.gpu
+def test_nextitnet_component_definition(sequential_files, deeprec_config_path):
+    yaml_file_nextitnet = os.path.join(deeprec_config_path, "nextitnet.yaml")
+    data_path, user_vocab, item_vocab, cate_vocab = sequential_files
+
+    # NextItNet model
+    hparams_nextitnet = prepare_hparams(
+        yaml_file_nextitnet,
+        train_num_ngs=4,
+        embed_l2=0.0,
+        layer_l2=0.0,
+        learning_rate=0.001,
+        epochs=1,
+        MODEL_DIR=os.path.join(data_path, "model"),
+        SUMMARIES_DIR=os.path.join(data_path, "summary"),
+        user_vocab=user_vocab,
+        item_vocab=item_vocab,
+        cate_vocab=cate_vocab,
+        need_sample=True,
+    )
+
+    model_nextitnet = NextItNetModel(hparams_nextitnet, NextItNetIterator)
+    assert model_nextitnet.logit is not None
+    assert model_nextitnet.update is not None
+    assert model_nextitnet.iterator is not None
+    assert model_nextitnet.hparams is not None
+    assert model_nextitnet.hparams.model_type == "NextItNet"
+    assert model_nextitnet.hparams.epochs == 1
+    assert model_nextitnet.hparams.batch_size == 400
+    assert model_nextitnet.hparams.learning_rate == 0.001
+    assert model_nextitnet.hparams.loss == "softmax"
+    assert model_nextitnet.hparams.optimizer == "adam"
+    assert model_nextitnet.hparams.train_num_ngs == 4
+    assert model_nextitnet.hparams.embed_l2 == 0.0
+    assert model_nextitnet.hparams.layer_l2 == 0.0
+    assert model_nextitnet.hparams.need_sample is True
+
+
+@pytest.mark.gpu
+def test_sum_component_definition(sequential_files, deeprec_config_path):
+    yaml_file_sum = os.path.join(deeprec_config_path, "sum.yaml")
+    data_path, user_vocab, item_vocab, cate_vocab = sequential_files
+
+    # SUM model
+    hparams_sum = prepare_hparams(
+        yaml_file_sum,
+        train_num_ngs=4,
+        embed_l2=0.0,
+        layer_l2=0.0,
+        learning_rate=0.001,
+        epochs=1,
+        MODEL_DIR=os.path.join(data_path, "model"),
+        SUMMARIES_DIR=os.path.join(data_path, "summary"),
+        user_vocab=user_vocab,
+        item_vocab=item_vocab,
+        cate_vocab=cate_vocab,
+        need_sample=True,
+    )
+
+    model_sum = SUMModel(hparams_sum, SequentialIterator)
+    assert model_sum.logit is not None
+    assert model_sum.update is not None
+    assert model_sum.iterator is not None
+    assert model_sum.hparams is not None
+    assert model_sum.hparams.model_type == "SUM"
+    assert model_sum.hparams.epochs == 1
+    assert model_sum.hparams.batch_size == 400
+    assert model_sum.hparams.learning_rate == 0.001
+    assert model_sum.hparams.loss == "softmax"
+    assert model_sum.hparams.optimizer == "adam"
+    assert model_sum.hparams.train_num_ngs == 4
+    assert model_sum.hparams.embed_l2 == 0.0
+    assert model_sum.hparams.layer_l2 == 0.0
+    assert model_sum.hparams.need_sample is True
+
+
+@pytest.mark.gpu
+def test_lightgcn_component_definition():
+    df = movielens.load_pandas_df(size="100k")
+    train, test = python_stratified_split(df, ratio=0.75)
+
+    data = ImplicitCF(train=train, test=test)
+
+    model = LightGCN(
+        n_users=data.n_users,
+        n_items=data.n_items,
+        norm_adj=data.get_norm_adj_mat(),
+        embed_size=64,
+        n_layers=3,
+    )
+
+    assert model.norm_adj is not None
+    assert model.user_embedding.weight.shape == (943, 64)
+    assert model.item_embedding.weight.shape == (1682, 64)
+    assert model.ua_embeddings.shape == (943, 64)
+    assert model.ia_embeddings.shape == (1682, 64)
+    assert model.n_layers == 3
